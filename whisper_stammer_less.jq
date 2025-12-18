@@ -40,9 +40,7 @@ def find_only_contiguous_repeating_sequences:
       # Second, filter *inside* the group.
       # Keep only the members that have a contiguous neighbor.
       | [
-      # Per AAPB policy, exclude from output (to preserve) the first of every contiguous repeating sequence
-#          range(0; $group | length) as $j # Iterate over the group by index
-           range(($L-1); $group | length) as $j # Iterate over the group by index
+          range(0; $group | length) as $j # Iterate over the group by index
           | $group[$j]                     # Get the current slice object
           | select(
               # Check if the *next* member (in $group) is contiguous
@@ -52,6 +50,8 @@ def find_only_contiguous_repeating_sequences:
               ( ($group[$j-1].i // null) == (.i - $L) )
             )
         ]
+      # Per AAPB policy, exclude from output (to preserve) the first of every contiguous repeating sequence
+        |.[1:]
     )
 
   # 4. Extract the "slice" (the array of objects) from each member
@@ -60,15 +60,16 @@ def find_only_contiguous_repeating_sequences:
 
   # 5. Flatten the result by one level to get the final array of arrays
   | flatten(1) | unique
+  # consider using unique_by(.start)|unique_by(.end) when extraneous keys (e.g, "probability") are present
 
 # ---
 # To use the function, pipe your JSON array into it:
-# .| find_only_contiguous_repeating_sequences
+# find_only_contiguous_repeating_sequences
 # ---
 ;
 
 # NOTE:  HERE IS THE WHISPER-SPECIFIC DATA STRUCTURE ASSUMED OF INPUT
-[.segments[].words] |flatten as $wordjson 
+[.segments[].words] |[flatten[]|select((.start|tonumber) < (.end|tonumber))|pick(.word,.start,.end)] as $wordjson 
 
 # but because it's too large to simply pass to the function, 
 | $wordjson|length as $wordjsonlength
@@ -83,5 +84,5 @@ def find_only_contiguous_repeating_sequences:
 # substitute "cleaner" version of stammered sections
 | $wordjson-$json2remove+$json2add 
 # make sure everything is sorted correctly for use as transcript data 
-| sort_by(.start_time)
+| sort_by(.start)
 # pipe this output to do phrase-level stuff for fixitplus consumption

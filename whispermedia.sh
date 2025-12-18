@@ -220,9 +220,7 @@ def find_only_contiguous_repeating_sequences:
       # Second, filter *inside* the group.
       # Keep only the members that have a contiguous neighbor.
       | [
-#          range(0; $group | length) as $j # Iterate over the group by index
-      # Per AAPB policy, exclude from output (to preserve) the first of every contiguous repeating sequence
-           range(($L-1); $group | length) as $j # Iterate over the group by index
+          range(0; $group | length) as $j # Iterate over the group by index
           | $group[$j]                     # Get the current slice object
           | select(
               # Check if the *next* member (in $group) is contiguous
@@ -232,6 +230,8 @@ def find_only_contiguous_repeating_sequences:
               ( ($group[$j-1].i // null) == (.i - $L) )
             )
         ]
+      # Per AAPB policy, exclude from output (to preserve) the first of every contiguous repeating sequence
+        |.[1:]
     )
 
   # 4. Extract the "slice" (the array of objects) from each member
@@ -247,7 +247,7 @@ def find_only_contiguous_repeating_sequences:
 ;
 
 # data input is JSON object as output by whisper-ai
-[.segments[].words] |flatten as $wordjson 
+[.segments[].words] |[flatten[]|select((.start|tonumber) < (.end|tonumber))|pick(.word,.start,.end)] as $wordjson 
 
 | $wordjson|length as $wordjsonlength
 # analyze 300 words each iteration, to reprocess overlapping 100 between times
@@ -260,7 +260,7 @@ def find_only_contiguous_repeating_sequences:
 
 | [ $json2remove[]|.word=(.word|gsub("[^ ]";" ")) ] as $json2add
 | $wordjson-$json2remove+$json2add 
-| sort_by(.start_time)
+| sort_by(.start)
 # now do phrase-level stuff for fixitplus consumption
 |  [{} + .[]|{"start_time": ( (((.start|tostring) + ".")|split(".")[0] + ".") + ( ((.start|tostring) + ".")|split(".")[1]   + "00" | .[0:2]) )         , "end_time": ( (((.end|tostring) + ".")|split(".")[0] + ".") + ( ((.end|tostring) + ".")|split(".")[1]   + "00" | .[0:2]) ) , "word_group" : ( (((.start|tonumber) + ((.end - .start)|tonumber))/ 5 + 1)|tostring|split(".")[0]|tonumber ) , "word" : (.word|ltrimstr(" "))  }] as $word_json 
 |  $word_json[0].start_time as $startoff 

@@ -31,6 +31,8 @@ prefixfile="$mediadir"/s3keyprefix.txt ;
 defaultS3prefix='cpb-aacip' ;
 suspendS3prefix='_SUSPEND_' ; # CHANGE CONTENTS OF FILE TO SUSPEND FUTURE PROCESSING
 
+jqver_min='1.8.1'; # older versions mishandle the stammer hammer function
+
 s3profile='wgbh-mla' ;
 s3resourcebucket='asr-rsrc';
 s3listingbucket='asr-listing';
@@ -80,6 +82,26 @@ do
         exit ;
     fi ;
 done
+
+# sanity check for jq version
+jqver=$(jq --version | tr -dC '\.[0-9]')
+if [ "$(echo $jqver | awk -F\. '{print $1}')" -lt "$(echo $jqver_min  | awk -F\. '{print $1}')"  ]
+then 
+	userChoice="$(osascript -e 'display dialog "UNIX utility \"jq\" needs upgrade to at least version '"$jqver_min"'" with title "ERROR" with icon 0 buttons {"Help"} default button 1 giving up after 10' -e 'button returned of result')" ;
+	if [ "$userChoice" == 'Help' ] ;
+	then 
+		callForHelp "I%20need%20to%20update%20jq"
+	fi ;
+	exit
+elif [ "$(echo $jqver | awk -F\. '{print $1}')" == "$(echo $jqver_min  | awk -F\. '{print $1}')"  -a "$(echo $jqver | awk -F\. '{print $2}')" -lt "$(echo $jqver_min  | awk -F\. '{print $2}')"  ]
+then
+	userChoice="$(osascript -e 'display dialog "UNIX utility \"jq\" needs upgrade to at least version '"$jqver_min"'" with title "ERROR" with icon 0 buttons {"Help"} default button 1 giving up after 10' -e 'button returned of result')" ;
+	if [ "$userChoice" == 'Help' ] ;
+	then
+		callForHelp "I%20need%20to%20update%20jq"
+	fi ;
+	exit
+fi 
 
 # sanity checks for aws stuff
 for bucket in "$s3mediabucket" "$s3listingbucket" "$s3outputbucket";
@@ -164,8 +186,8 @@ my_version_sig=$(openssl dgst -md5 "$0" | awk -F\= '{print $2}' | awk '{print $1
 if [ -n "$latest_version_sig" -a "$my_version_sig" != "$latest_version_sig" ];
 then 
      echo 'AUTO-UPDATE ON'
-    aws s3 cp --profile $s3profile s3://"$s3resourcebucket"/"$myname" - > "$mediadir"/"$myname"  ;
-    exit ;
+     aws s3 cp --profile $s3profile s3://"$s3resourcebucket"/"$myname" - > "$mediadir"/"$myname"  ;
+     exit ;
 else 
     echo > /dev/null ;
 fi 2>/dev/null ;
@@ -211,9 +233,8 @@ def find_only_contiguous_repeating_sequences:
 
   # 3. Filter the groups:
   | map(
-      # First, keep only patterns that repeat (group length > 1)
-      select(length > 1)
-      # --- FIX IS HERE ---
+      # First, DO NOT keep only patterns that repeat (group length > 1) because single-word repetition patterns can be a singular group 
+      select(length > 0 )
       | . as $group     # Save the group array to a variable
       | .[0].L as $L    # Get the sequence length for this group
       # ---
@@ -223,6 +244,9 @@ def find_only_contiguous_repeating_sequences:
           range(0; $group | length) as $j # Iterate over the group by index
           | $group[$j]                     # Get the current slice object
           | select(
+              # Check if this group pattern consists of a single word, repeated 3 or more times
+              ( ($group[$j].pattern|length > 2) and ($group[$j].pattern|unique|length == 1) )
+              or
               # Check if the *next* member (in $group) is contiguous
               ( ($group[$j+1].i // null) == (.i + $L) )
               or
@@ -231,7 +255,7 @@ def find_only_contiguous_repeating_sequences:
             )
         ]
       # Per AAPB policy, exclude from output (to preserve) the first of every contiguous repeating sequence
-        |.[1:]
+      |.[1:]
     )
 
   # 4. Extract the "slice" (the array of objects) from each member
@@ -239,7 +263,8 @@ def find_only_contiguous_repeating_sequences:
   | map(.[].slice)
 
   # 5. Flatten the result by one level to get the final array of arrays
-  | flatten(1) | unique
+  | flatten(1) 
+  | unique
 
 # ---
 # To use the function, pipe your JSON array into it:
@@ -252,9 +277,8 @@ def find_only_contiguous_repeating_sequences:
 | $wordjson|length as $wordjsonlength
 # analyze 300 words each iteration, to reprocess overlapping 100 between times
 # [ resultarray,startnum,endnum,ismore]
-| [ [] , 0 , 400 , true ] 
-# |  [ while(.[3] == true ;[ .[1] as $start | .[2] as $end | .[0] + ( $wordjson[$start:$end ] | find_only_contiguous_repeating_sequences)  , .[1] + 200  , if .[2] + 200  >= $wordjsonlength then -1 else (.[2]+200) end, (.[2] + 200 ) <= $wordjsonlength  ] ) | .[0]]
-|  [ while(.[3] == true ;[ .[1] as $start | (if .[2] == -1 then .[-2] else .[2]-100 end ) as $end | .[0] + ( $wordjson[$start:$end ] | find_only_contiguous_repeating_sequences)  , .[1] + 200  , if .[2] + 200  >= $wordjsonlength then -1 else (.[2]+200) end, (.[2] + 200 ) <= $wordjsonlength  ] ) | .[0]]
+| [ [] , 0 , 300 , true ]  
+| [  while(.[3]==true ; [ .[1] as $start | .[2] as $end | .[0] + ( $wordjson[$start:$end ] | find_only_contiguous_repeating_sequences  )   ,(.[1]+200) , if (.[2]+200) >= $wordjsonlength then -1 else (.[2]+200) end , .[1] < $wordjsonlength  ]   )|.[0]] 
 | flatten | unique  as $json2remove
 
 
@@ -280,11 +304,12 @@ def find_only_contiguous_repeating_sequences:
 		tsfile="$mediadir"/transcripts/"$guid"'-transcript.json'
 		max_segment_chars=$(jq -r '[.parts[].text|length]|sort[-1]' "$tsfile" )
 	else
+		/bin/rm "$mediadir"/transcripts/"$guid"'-transcript.json' 2>/dev/null ;
 		tfile=$(ls -1 "$mediadir"/transcripts/"$defaultS3prefix"*.txt | head -1 )
 		tsfile="$mediadir"'/transcripts/'"$guid"'-transcript.txt'
 		touch "$tfile" "$tsfile"
 		cp "$tfile" "$tsfile"
-		max_segment_chars=$(wc -w "$tsfile")
+		max_segment_chars=$(wc -w "$tsfile" | awk '{print $1}')
 	fi
 	#	whisper_opts_json=$(echo '{"WHISPER OPTS":['"$(echo $whisper_opts | sed 's#\(\-\-[^ ]*\) *#"},{"option":"\1","value":"#g;s#$#"}#1;s# *\("\)#\1#g' | cut -c4-)"']}' | jq -r '.');
 	#	VERSION IN SCRIPT CODE NEEDS TO ESCAPE CURLY BRACES IN `sed`
@@ -294,7 +319,7 @@ def find_only_contiguous_repeating_sequences:
 		stat_json=$(for f in $(ls -1 "$mediadir"/transcripts/*);
 		do 
 			eval "$(stat -s "$f")"; 
-			path=$(echo "$(pwd -P)"/"$f"); 
+			path="$f"; 
 			jq -n --arg st_dev "$st_dev" --arg st_ino "$st_ino" --arg st_mode "$st_mode" --arg st_nlink "$st_nlink" --arg st_uid "$st_uid" --arg st_gid "$st_gid" --arg st_rdev "$st_rdev" --arg st_size "$st_size" --arg st_atime "$st_atime" --arg st_mtime "$st_mtime" --arg st_ctime "$st_ctime" --arg st_birthtime "$st_birthtime" --arg st_blksize "$st_blksize" --arg st_blocks "$st_blocks" --arg st_flags "$st_flags" --arg path "$path" '{
 		"st_dev": $st_dev,
 		"st_ino": $st_ino,
@@ -314,23 +339,28 @@ def find_only_contiguous_repeating_sequences:
 		"path": $path}';
 		done | jq -s '{"FILE SYSTEM METADATA":.}')
 		
-		fullreport=$(jq -n --argjson ffprobe_json "$(cat "$mediadir"/transcripts/stats.json)" --argjson whisper_opts_json "$whisper_opts_json" --argjson words_count_json "$words_count_json" --argjson stat_json "$stat_json" '[$ffprobe_json,$whisper_opts_json,$words_count_json,$stat_json]' 2>/dev/null)
+		ffprobe_json=$(cat "$mediadir"/transcripts/stats.json);
+		fullreport=$(jq -n --argjson ffprobe_json "$ffprobe_json" --argjson whisper_opts_json "$whisper_opts_json" --argjson words_count_json "$words_count_json" --argjson stat_json "$stat_json" '[$ffprobe_json,$whisper_opts_json,$words_count_json,$stat_json]' 2>/dev/null)
 		if [ -n "$fullreport" ] 
 		then 
 			echo "$fullreport" > "$mediadir"/transcripts/stats.json ;
 			# now make variables for the report file named like 'cpb-aacip-b3f0b4c6bbe-tpme-20251112-003041-369983'
-			tpme_date=$(date -j -f "%a %b %d %T %Z %Y" "$(date -r $(jq -r '.[]|select(has("FILE SYSTEM METADATA"))."FILE SYSTEM METADATA"[]|select( (.path|endswith("-transcript.json")) or (.path|endswith("-transcript.txt")) )."st_mtime"' "$mediadir"/transcripts/stats.json ))"  "+%Y-%m-%dT%H:%M:%S")
+			file_format='JSON'
 		else
-			tpme_date=$(date -j -f "%a %b %d %T %Z %Y" "$(date -r "$tsfile")"  "+%Y-%m-%dT%H:%M:%S")
+			file_format='TXT'
 			echo "# WHISPER OPTS: $whisper_opts" >>  "$mediadir"/transcripts/errata.txt ;
 			echo '# WORDS COUNT: ' >>  "$mediadir"/transcripts/errata.txt ; 
 			echo "$max_segment_chars" >> "$mediadir"/transcripts/errata.txt ;
 			echo '# FILE SYSTEM METADATA: ' >>  "$mediadir"/transcripts/errata.txt ; 
 			stat "$mediadir"/transcripts/* >> "$mediadir"/transcripts/errata.txt ;
+
 		fi
 		# GENERATE THE TPME FILE
-		jq -n --arg media_id "$guid" --arg transcript_id "$(basename "$tsfile")"  --arg parent_transcript_id "$(basename "$tfile")" --arg modification_date "$tpme_date" --arg max_segment_chars "$max_segment_chars" --arg application_name "$(basename "$0")" --arg application_version 'v1.2.3' '[{"media_id": $media_id,"transcript_id": $transcript_id,"parent_transcript_id": $parent_transcript_id,"modification_date": $modification_date,"provider": "GBH Archives","type": "transcript","file_format": "AAPB-transcript-JSON","features": {"time_aligned": true,"max_segment_chars": $max_segment_chars},"transcript_language": ["en"],"human_review_level": "machine-generated","application_type": "format-conversion","application_provider": "GBH Archives","application_name": $application_name,"application_version": $application_version,"application_repo": "https://github.com/WGBH-MLA/transcript_processing_scripts/tree/v1.2.3","application_params": [{"custom jq function": "find_only_contiguous_repeating_sequences"}],"processing_note": "word-level input is filtered to replace with white space all characters of word sequences (3 word minimum) repeated in at least 2 contiguous patterns; only the first such instance is preserved."}]' > "$mediadir"/transcripts/"$guid"'-tpme-'"$(echo "$tpme_date" | awk -FT '{print $1}' | tr -dC '[0-9]')"'-'"$(echo "$tpme_date" | awk -FT '{print $2}' | tr -dC '[0-9]')"'.json'
-		
+#		jq -n --arg media_id "$guid" --arg transcript_id "$(basename "$tsfile")"  --arg parent_transcript_id "$(basename "$tfile")" --arg modification_date "$tpme_date" --arg max_segment_chars "$max_segment_chars" --arg application_name "$(basename "$0")" --arg application_version 'v1.2.3' '[{"media_id": $media_id,"transcript_id": $transcript_id,"parent_transcript_id": $parent_transcript_id,"modification_date": $modification_date,"provider": "GBH Archives","type": "transcript","file_format": "AAPB-transcript-JSON","features": {"time_aligned": true,"max_segment_chars": $max_segment_chars},"transcript_language": ["en"],"human_review_level": "machine-generated","application_type": "format-conversion","application_provider": "GBH Archives","application_name": $application_name,"application_version": $application_version,"application_repo": "https://github.com/WGBH-MLA/transcript_processing_scripts/tree/v1.2.3","application_params": [{"custom jq function": "find_only_contiguous_repeating_sequences"}],"processing_note": "word-level input is filtered to replace with white space all characters of word sequences (3 word minimum) repeated in at least 2 contiguous patterns; only the first such instance is preserved."}]' > "$mediadir"/transcripts/"$guid"'-tpme-'"$(echo "$tpme_date" | awk -FT '{print $1}' | tr -dC '[0-9]')"'-'"$(echo "$tpme_date" | awk -FT '{print $2}' | tr -dC '[0-9]')"'.json'
+		mediafile=$(echo "$ffprobe_json" | jq -r '.format.filename|split("/").[-1]') ;
+		tpme1_date=$(date -j -f "%a %b %d %T %Z %Y" "$(date -r $(echo "$stat_json" | jq -r '[."FILE SYSTEM METADATA"[]|select( (.path|endswith("stats.json")) )][0]."st_birthtime"' ))"  "+%Y-%m-%dT%H:%M:%S") ;
+		tpme2_date=$(date -j -f "%a %b %d %T %Z %Y" "$(date -r $(echo "$stat_json" | jq -r '[."FILE SYSTEM METADATA"[]|select( (.path|endswith("-transcript.json")) or (.path|endswith("-transcript.txt")) )][0]."st_mtime"' ))"  "+%Y-%m-%dT%H:%M:%S") ;
+		jq -n --arg media_id "$guid" --arg transcript1_id "$(basename "$tfile")" --arg transcript2_id "$(basename "$tsfile")" --arg parent_transcript1_id "$mediafile" --arg parent_transcript2_id "$(basename "$tfile")" --arg modification1_date "$tpme1_date" --arg modification2_date "$tpme2_date" --arg file_format "$file_format" --arg max_segment_chars "$max_segment_chars" --arg application1_name 'whisper' --arg application2_name "$(basename "$0")" --arg application1_version '20230314' --arg application2_version 'v1.2.3' --arg operator "$USER" '[{"media_id": $media_id,"transcript_id": $transcript1_id,"modification_date":$modification1_date , "provider":"GBH Archives", "type":"transcript" , "file_format":$file_format, "features":{"time_aligned":($file_format=="JSON")},"human_review_level":"machine-generated","application_type":"ASR","application_id":"","transcript_language":["en"],"application_provider":"OpenAI","application_name":"whisper","application_version":"20230314","application_repo": "https://github.com/openai/whisper","inference_model": "openai/whisper-small","application_params": [{"model": "small","language":"en","initialPrompt": "","noSpeechThreshold": 0.1,"word_timestamps" : ($file_format=="JSON")}],"processing_note": ("Operator=" + $operator +  (if ($file_format=="JSON"|not) then "  Error: no JSON output file was produced." end)) },{"media_id": $media_id,"transcript_id": $transcript2_id,"parent_transcript_id": $parent_transcript2_id,"modification_date": $modification1_date,"provider": "GBH Archives","type": "transcript","file_format": ("AAPB-transcript-" + $file_format),"features": {"time_aligned": ($file_format=="JSON"),"max_segment_chars": $max_segment_chars},"transcript_language": ["en"],"human_review_level": "machine-generated","application_type": "format-conversion","application_provider": "GBH Archives","application_name": $application2_name,"application_version": $application2_version,"application_repo": "https://github.com/WGBH-MLA/transcript_processing_scripts/tree/v1.2.3","application_params": [],"processing_note": ("Operator=" + $operator + (if ($file_format=="JSON"|not) then "  Error: missing JSON input file; transcript output is text without timestamps." end))}]' > "$mediadir"/transcripts/"$guid"'-tpme-'"$(echo "$tpme2_date" | awk -FT '{print $1}' | tr -dC '[0-9]')"'-'"$(echo "$tpme2_date" | awk -FT '{print $2}' | tr -dC '[0-9]')"'.json'
         mkdir -p "$mediadir"/transcripts/"$guid" ;
         find "$mediadir"/transcripts -maxdepth 1 -type f -exec mv {} "$mediadir"/transcripts/"$guid"/ ';' ;
     done

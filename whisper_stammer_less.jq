@@ -1,5 +1,3 @@
-#!/usr/bin/env jq
-# 
 # recommended:  invoke this code using `jq -f /path/to/this/file` 
 # works with either STDIN or filepath arg
 #
@@ -31,9 +29,8 @@ def find_only_contiguous_repeating_sequences:
 
   # 3. Filter the groups:
   | map(
-      # First, keep only patterns that repeat (group length > 1)
-      select(length > 1)
-      # --- FIX IS HERE ---
+      # First, DO NOT keep only patterns that repeat (group length > 1) because single-word repetition patterns can be a singular group
+      select(length > 0)
       | . as $group     # Save the group array to a variable
       | .[0].L as $L    # Get the sequence length for this group
       # ---
@@ -43,6 +40,9 @@ def find_only_contiguous_repeating_sequences:
           range(0; $group | length) as $j # Iterate over the group by index
           | $group[$j]                     # Get the current slice object
           | select(
+              # Check if this group pattern consists of a single word, repeated 3 or more times
+              ( ($group[$j].pattern|length > 2) and ($group[$j].pattern|unique|length == 1) )
+              or
               # Check if the *next* member (in $group) is contiguous
               ( ($group[$j+1].i // null) == (.i + $L) )
               or
@@ -68,15 +68,15 @@ def find_only_contiguous_repeating_sequences:
 # ---
 ;
 
-# NOTE:  HERE IS THE WHISPER-SPECIFIC DATA STRUCTURE ASSUMED OF INPUT
-[.segments[].words] |[flatten[]|select((.start|tonumber) < (.end|tonumber))|pick(.word,.start,.end)] as $wordjson 
+### NOTE:  HERE IS THE WHISPER-SPECIFIC DATA STRUCTURE ASSUMED OF INPUT
+[.segments[].words] |[flatten[]|pick(.word,.start,.end)] as $wordjson 
 
 # but because it's too large to simply pass to the function, 
 | $wordjson|length as $wordjsonlength
 # analyze 300 words each iteration, to reprocess overlapping 100 between times
 # [ resultarray,startnum,endnum,ismore]
-| [ [] , 0 , 400 , true ] 
-|  [ while(.[3] == true ;[ .[1] as $start | (if .[2] == -1 then .[-2] else .[2]-100 end ) as $end | .[0] + ( $wordjson[$start:$end ] | find_only_contiguous_repeating_sequences)  , .[1] + 200  , if .[2] + 200  >= $wordjsonlength then -1 else (.[2]+200) end, (.[2] + 200 ) <= $wordjsonlength  ] ) | .[0]]
+| [ [] , 0 , 300 , true ]  
+| [  while(.[3]==true ; [ .[1] as $start | .[2] as $end | .[0] + ( $wordjson[$start:$end ] | find_only_contiguous_repeating_sequences  )   ,(.[1]+200) , if (.[2]+200) >= $wordjsonlength then -1 else (.[2]+200) end , .[1] < $wordjsonlength  ]   )|.[0]] 
 | flatten | unique  as $json2remove
 
 # create a modified version of $json2remove to impose "cleaner" white space

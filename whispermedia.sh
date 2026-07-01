@@ -130,6 +130,7 @@ until [ "$dockerinfo" == "running" ]
 # while [ -z "$(docker info 2>/dev/null)" ] 
 do
 	dockerinfo=$(docker desktop status --format json 2>/dev/null | jq -r '.Status' ) ;
+	if [ "$dockerinfo" == "stopped" ]; then docker desktop start ; fi ;
 	sleep 10
 	nowtime="$(date +%s)"
 	if [ "$(expr $nowtime - $starttime)" -gt "$startupTimeout" ] 
@@ -139,6 +140,7 @@ do
 # 		then 
 # 			callForHelp "Docker%20took%20too%20long%20to%20launch."
 # 		fi ;
+	if [ "$dockerinfo" == "stopped" ]; then docker desktop restart ; fi ;
 	exit ;
 	fi ;
 done

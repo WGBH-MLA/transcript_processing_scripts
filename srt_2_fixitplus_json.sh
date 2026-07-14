@@ -31,6 +31,8 @@ then
 	exit ;
 fi
 
+IFS=$'\n\r\b' ;
+
 guid=$(basename "$1" .srt);
 spid=0;
 echo $(printf %s '{"id":"'$guid'","language":"en-US","parts":[' ; 
@@ -44,7 +46,7 @@ echo $(printf %s '{"id":"'$guid'","language":"en-US","parts":[' ;
 			stime=$(smpte2secs "$smpte_start");
 			etime=$(smpte2secs "$smpte_end");
 			if [ "$spid" -gt 1 ];then printf %s '"},' ; fi; 
-				echo '{"speaker_id":'"$spid"',"start_time": "'$stime'","end_time": "'$etime'","text": "';  
+				echo '{"speaker_id":'"$spid"',"start_time": '$stime',"end_time": '$etime',"text": "';  
 			else 
 				echo $line | sed 's#"#\\&#g' | tr '\n' ' ';
 			fi;
